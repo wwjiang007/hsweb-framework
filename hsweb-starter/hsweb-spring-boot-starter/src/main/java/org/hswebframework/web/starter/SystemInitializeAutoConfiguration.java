@@ -1,6 +1,6 @@
 /*
  *
- *  * Copyright 2016 http://www.hswebframework.org
+ *  * Copyright 2019 http://www.hswebframework.org
  *  *
  *  * Licensed under the Apache License, Version 2.0 (the "License");
  *  * you may not use this file except in compliance with the License.
@@ -18,14 +18,11 @@
 
 package org.hswebframework.web.starter;
 
+import lombok.extern.slf4j.Slf4j;
 import org.hswebframework.ezorm.rdb.executor.SqlExecutor;
 import org.hswebframework.ezorm.rdb.meta.RDBDatabaseMetaData;
-import org.hswebframework.ezorm.rdb.meta.parser.H2TableMetaParser;
-import org.hswebframework.ezorm.rdb.meta.parser.MysqlTableMetaParser;
-import org.hswebframework.ezorm.rdb.meta.parser.OracleTableMetaParser;
-import org.hswebframework.ezorm.rdb.render.dialect.H2RDBDatabaseMetaData;
-import org.hswebframework.ezorm.rdb.render.dialect.MysqlRDBDatabaseMetaData;
-import org.hswebframework.ezorm.rdb.render.dialect.OracleRDBDatabaseMetaData;
+import org.hswebframework.ezorm.rdb.meta.parser.*;
+import org.hswebframework.ezorm.rdb.render.dialect.*;
 import org.hswebframework.ezorm.rdb.simple.SimpleDatabase;
 import org.hswebframework.expands.script.engine.DynamicScriptEngine;
 import org.hswebframework.expands.script.engine.DynamicScriptEngineFactory;
@@ -33,6 +30,7 @@ import org.hswebframework.web.ScriptScope;
 import org.hswebframework.web.datasource.DataSourceHolder;
 import org.hswebframework.web.datasource.DatabaseType;
 import org.hswebframework.web.service.Service;
+import org.hswebframework.web.starter.event.SystemInitializeEvent;
 import org.hswebframework.web.starter.init.SystemInitialize;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +38,7 @@ import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationUtils;
@@ -63,6 +62,7 @@ import java.util.stream.Stream;
 @Configuration
 @EnableConfigurationProperties(AppProperties.class)
 @Order(Ordered.HIGHEST_PRECEDENCE)
+@Slf4j
 public class SystemInitializeAutoConfiguration implements CommandLineRunner, BeanPostProcessor {
 
     @Autowired
@@ -76,6 +76,9 @@ public class SystemInitializeAutoConfiguration implements CommandLineRunner, Bea
 
     @Autowired
     private ApplicationContext applicationContext;
+
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
 
     private List<DynamicScriptEngine> engines;
 
@@ -107,9 +110,14 @@ public class SystemInitializeAutoConfiguration implements CommandLineRunner, Bea
 
     @Override
     public void run(String... args) throws Exception {
+
+        if (!appProperties.isAutoInit()) {
+            log.debug("app auto init is disabled");
+            return;
+        }
         DatabaseType type = DataSourceHolder.currentDatabaseType();
         SystemVersion version = appProperties.build();
-        if(version.getName()==null){
+        if (version.getName() == null) {
             version.setName("unknown");
         }
         Connection connection = null;
@@ -127,6 +135,15 @@ public class SystemInitializeAutoConfiguration implements CommandLineRunner, Bea
             case oracle:
                 metaData = new OracleRDBDatabaseMetaData();
                 metaData.setParser(new OracleTableMetaParser(sqlExecutor));
+                break;
+            case postgresql:
+                metaData = new PGRDBDatabaseMetaData();
+                metaData.setParser(new PGSqlTableMetaParser(sqlExecutor));
+                break;
+            case sqlserver:
+            case jtds_sqlserver:
+                metaData = new MSSQLRDBDatabaseMetaData();
+                metaData.setParser(new SqlServer2012TableMetaParser(sqlExecutor));
                 break;
             case mysql:
                 String engine = environment.getProperty("mysql.engine");
@@ -146,11 +163,17 @@ public class SystemInitializeAutoConfiguration implements CommandLineRunner, Bea
 
         SimpleDatabase database = new SimpleDatabase(metaData, sqlExecutor);
         database.setAutoParse(true);
+
+        SystemInitializeEvent event = new SystemInitializeEvent(database);
+        eventPublisher.publishEvent(event);
+        if (event.isIgnore()) {
+            return;
+        }
         SystemInitialize initialize = new SystemInitialize(sqlExecutor, database, version);
 
         initialize.addScriptContext("db", jdbcUserName);
         initialize.addScriptContext("dbType", type.name());
-
+        initialize.setExcludeTables(appProperties.getInitTableExcludes());
         initialize.install();
     }
 

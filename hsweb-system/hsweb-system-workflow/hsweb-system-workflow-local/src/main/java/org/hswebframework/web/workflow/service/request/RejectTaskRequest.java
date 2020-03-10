@@ -28,11 +28,8 @@ public class RejectTaskRequest implements ValidateBean {
     @NotBlank(message = "[rejectUserName]不能为空")
     private String rejectUserName;
 
-    @NotBlank(message = "[processInstanceId]不能为空")
-    private String processInstanceId;
-
-    @NotBlank(message = "[activityId]不能为空")
-    private String activityId;
+    @NotBlank(message = "[taskId]不能为空")
+    private String taskId;
 
     //自定义数据,将会记录到流程历史记录里,比如回退原因等
     private Map<String, Object> data = new HashMap<>();
